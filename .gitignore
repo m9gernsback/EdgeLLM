@@ -1,0 +1,16 @@
+# 第三方工具源码（含独立 .git，体积大）
+LlamaCpp/
+
+# 模型权重与转换产物（60GB+，不入库）
+MiniCpmO26/Models/
+MiniCpmO26/Gguf/
+*.gguf
+*.safetensors
+*.bin
+*.projector
+*.clip
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+__pycache__/
