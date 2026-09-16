@@ -14,3 +14,6 @@ MiniCpmO26/Gguf/
 .DS_Store
 Thumbs.db
 __pycache__/
+
+# CUTLASS 学习目录的构建产物
+CutlassLearn/build/
