@@ -62,6 +62,34 @@ __global__ void ReduceShuffle(const float* __restrict__ in,
   }
 }
 
+__global__ void ReduceShuffleGridStride(const float* __restrict__ in,
+                                    float* __restrict__ out, int n) {
+  __shared__ float warp_sums[kBlockSize / kWarpSize];
+  int tid = threadIdx.x;
+  int stride = gridDim.x * blockDim.x;
+  float sum = 0.0f;
+
+  for (int i = blockIdx.x * blockDim.x + tid; i < n; i += stride)
+    sum += in[i];
+
+  // Reduce within the warp using register exchanges (no barriers).
+  for (int offset = kWarpSize / 2; offset > 0; offset >>= 1)
+    sum += __shfl_down_sync(0xffffffffu, sum, offset);
+
+  int lane = tid & (kWarpSize - 1);
+  int warp = tid / kWarpSize;
+  if (lane == 0) warp_sums[warp] = sum;
+  __syncthreads();
+
+  // First warp reduces the per-warp partials.
+  if (warp == 0) {
+    sum = (lane < kBlockSize / kWarpSize) ? warp_sums[lane] : 0.0f;
+    for (int offset = kWarpSize / 2; offset > 0; offset >>= 1)
+      sum += __shfl_down_sync(0xffffffffu, sum, offset);
+    if (lane == 0) atomicAdd(out, sum);
+  }
+}
+
 int main() {
   const int n = 1 << 26;
   const size_t bytes = static_cast<size_t>(n) * sizeof(float);
@@ -77,7 +105,7 @@ int main() {
   const int grid = (n + kBlockSize - 1) / kBlockSize;
   float gpu_sum = 0.f;
 
-  auto run = [&](auto kernel, const char* name) {
+  auto run = [&](auto kernel, const char* name, int grid) {
     auto launch = [&] {
       CUDA_CHECK(cudaMemset(d_out, 0, sizeof(float)));
       kernel<<<grid, kBlockSize>>>(d_in, d_out, n);
@@ -95,8 +123,13 @@ int main() {
     return gpu_sum;
   };
 
-  float sum_v1 = run(ReduceShared, "V1 shared-mem tree");
-  float sum_v2 = run(ReduceShuffle, "V2 warp shuffle");
+  float sum_v1 = run(ReduceShared, "V1 shared-mem tree", grid);
+  float sum_v2 = run(ReduceShuffle, "V2 warp shuffle", grid);
+  int sm_count = 0;
+  CUDA_CHECK(cudaDeviceGetAttribute(&sm_count,
+                                    cudaDevAttrMultiProcessorCount, 0));
+  int grid_stride = sm_count * 8;  // 8 blocks per SM is plenty
+  float sum_v3 = run(ReduceShuffleGridStride, "V3 grid stride", grid_stride);
 
   // CPU reference (double to keep the reference accurate).
   double ref = 0.0;
@@ -107,11 +140,13 @@ int main() {
   auto ok = [&](float s) {
     return fabsf(s - (float)ref) < 1e-4f * (fabsf((float)ref) + 1.0f);
   };
-  printf("CPU ref %.4f | V1 %.4f %s | V2 %.4f %s\n", ref, sum_v1,
-         ok(sum_v1) ? "PASS" : "FAIL", sum_v2, ok(sum_v2) ? "PASS" : "FAIL");
+  printf("CPU ref %.4f | V1 %.4f %s | V2 %.4f %s | V3 %.4f %s\n", ref, 
+        sum_v1, ok(sum_v1) ? "PASS" : "FAIL", 
+        sum_v2, ok(sum_v2) ? "PASS" : "FAIL",
+        sum_v3, ok(sum_v3) ? "PASS" : "FAIL");
 
   cudaFree(d_in);
   cudaFree(d_out);
   delete[] h_in;
-  return (ok(sum_v1) && ok(sum_v2)) ? 0 : 1;
+  return (ok(sum_v1) && ok(sum_v2) && ok(sum_v3)) ? 0 : 1;
 }

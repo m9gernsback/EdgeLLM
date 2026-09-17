@@ -18,9 +18,11 @@ Hardware: RTX 5080 (sm_120, Blackwell consumer) · CUDA 13.2 · WSL2
 
 | Kernel | Time | Bandwidth |
 |---|---|---|
-| V1 shared-mem tree | 0.548 ms | 489 GB/s |
-| V2 warp shuffle | 0.371 ms | 722 GB/s |
+| V1 shared-mem tree | 0.593 ms | 453 GB/s |
+| V2 warp shuffle | 0.417 ms | 644 GB/s |
+| V3 grid-stride + shuffle | 0.324 ms | 828 GB/s |
 
 - V1 慢的根因：树形归约每一轮都要 `__syncthreads`，最后 5 轮（≤32 元素）只有 1 个 warp 在干活，其余 warp 空等。
-- V2 用 `__shfl_down_sync` 寄存器交换替代最后 5 轮 shared memory + barrier，带宽提升 ~48%。
-- 遗留问题（阶段 1 前可思考）：两个版本都只用了"一线程一元素"，每个 block 读完 1KB 就结束，grid 高达 262144 个 block、block 调度开销占比不小；优化方向是每线程先串行累加多个元素（grid-stride）再进 block 归约。
+- V2 用 `__shfl_down_sync` 寄存器交换替代最后 5 轮 shared memory + barrier。
+- V3 在 V2 基础上把 grid 从 26 万个 block 降到 672 个（SM 数 × 8），每线程 grid-stride 串行累加多个元素，消除 block 调度开销，达到理论带宽的 ~86%。
+- 附带收益：V3 的累加顺序更接近 CPU 顺序，结果精度也是三者中最好的。
